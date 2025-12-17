@@ -75,7 +75,6 @@ type FilePosition struct {
 	Timestamp  time.Time    `json:"timestamp"`
 }
 
-// Metrics holds counters for observability using OpenTelemetry
 type Metrics struct {
 	LinesReadCounter      metric.Int64Counter
 	BytesReadCounter      metric.Int64Counter
@@ -91,17 +90,6 @@ type Metrics struct {
 	StateWrites   atomic.Int64
 }
 
-// HealthStatus represents the health of the input
-type HealthStatus struct {
-	IsHealthy    bool
-	LastError    string
-	LastReadTime time.Time
-	FileSize     int64
-	ByteOffset   int64
-	LineNumber   int64
-}
-
-// StreamingFileInput implements a robust streaming file input for Bento
 type StreamingFileInput struct {
 	config        StreamingFileInputConfig
 	logger        *service.Logger
@@ -119,8 +107,6 @@ type StreamingFileInput struct {
 	lastSaveTime  time.Time
 	connected     bool
 	connMutex     sync.RWMutex
-	lastInode     uint64
-	lastSize      atomic.Int64
 	metrics       *Metrics
 	ackCount      atomic.Int64
 	inFlightCount atomic.Int64
@@ -346,8 +332,6 @@ func (sfi *StreamingFileInput) Connect(ctx context.Context) error {
 	currentInode, hasInode := inodeOf(stat)
 	currentSize := stat.Size()
 
-	sfi.lastSize.Store(currentSize)
-
 	sfi.positionMutex.Lock()
 	savedInode := sfi.position.Inode
 	savedOffset := sfi.position.ByteOffset.Load()
@@ -362,7 +346,6 @@ func (sfi *StreamingFileInput) Connect(ctx context.Context) error {
 	sfi.positionMutex.Lock()
 	if hasInode {
 		sfi.position.Inode = currentInode
-		sfi.lastInode = currentInode
 	}
 
 	if !shouldResume {
