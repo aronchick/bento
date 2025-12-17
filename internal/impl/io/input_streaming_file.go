@@ -71,15 +71,6 @@ type Metrics struct {
 	StateWrites   atomic.Int64
 }
 
-type HealthStatus struct {
-	IsHealthy    bool
-	LastError    string
-	LastReadTime time.Time
-	FileSize     int64
-	ByteOffset   int64
-	LineNumber   int64
-}
-
 type StreamingFileInput struct {
 	config        StreamingFileInputConfig
 	logger        *service.Logger
@@ -97,8 +88,6 @@ type StreamingFileInput struct {
 	lastSaveTime  time.Time
 	connected     bool
 	connMutex     sync.RWMutex
-	lastInode     uint64
-	lastSize      atomic.Int64
 	metrics       *Metrics
 	ackCount      atomic.Int64
 	inFlightCount atomic.Int64
@@ -327,8 +316,6 @@ func (sfi *StreamingFileInput) Connect(ctx context.Context) error {
 	currentInode, hasInode := inodeOf(stat)
 	currentSize := stat.Size()
 
-	sfi.lastSize.Store(currentSize)
-
 	sfi.positionMutex.Lock()
 	savedInode := sfi.position.Inode
 	savedOffset := sfi.position.ByteOffset.Load()
@@ -343,7 +330,6 @@ func (sfi *StreamingFileInput) Connect(ctx context.Context) error {
 	sfi.positionMutex.Lock()
 	if hasInode {
 		sfi.position.Inode = currentInode
-		sfi.lastInode = currentInode
 	}
 
 	if !shouldResume {
