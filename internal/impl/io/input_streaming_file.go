@@ -229,9 +229,8 @@ func NewStreamingFileInput(cfg StreamingFileInputConfig, logger *service.Logger)
 
 func streamingFileInputSpec() *service.ConfigSpec {
 	return service.NewConfigSpec().
-		Stable().
 		Categories("Local").
-		Summary("Robust streaming file input with automatic recovery and rotation handling").
+		Summary("Streaming file input with automatic recovery and rotation handling").
 		Description(`
 Reads from a file continuously, similar to using a subprocess with 'tail -F', but with several important improvements:
 
