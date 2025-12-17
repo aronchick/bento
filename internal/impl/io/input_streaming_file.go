@@ -216,7 +216,7 @@ func NewStreamingFileInput(cfg StreamingFileInputConfig, logger *service.Logger)
 func streamingFileInputSpec() *service.ConfigSpec {
 	return service.NewConfigSpec().
 		Categories("Local").
-		Summary("Streaming file input with log rotation and truncation handling").
+		Summary("Streaming file input with automatic recovery and rotation handling").
 		Description(`
 Reads from a file continuously, similar to 'tail -F', with handling for common log file scenarios.
 
