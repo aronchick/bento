@@ -1,20 +1,3 @@
-// Package io contains component implementations for file I/O and streaming.
-//
-// # StreamingFileInput Plugin
-//
-// The StreamingFileInput plugin reads from files continuously with the following features:
-//   - Automatic recovery from crashes using persistent position tracking
-//   - Seamless handling of file rotations
-//   - At-least-once semantics with ack-based position updates (exactly-once in normal operation)
-//   - Comprehensive metrics and observability via OpenTelemetry
-//   - No external process dependencies
-//
-// # Semantics
-//
-// The plugin provides at-least-once semantics:
-//   - In normal operation: exactly-once (position persisted on ack)
-//   - During forced shutdown: at-least-once (soft checkpoint may lag behind acks)
-//   - After rotation: exactly-once (rotation marker persisted immediately)
 package io
 
 import (
@@ -53,17 +36,16 @@ var splitKeepNewline = func(data []byte, atEOF bool) (int, []byte, error) {
 	return 0, nil, nil
 }
 
-// StreamingFileInputConfig holds configuration for the streaming file input
 type StreamingFileInputConfig struct {
-	Path               string        `json:"path"`
-	StateDir           string        `json:"state_dir"`
-	CheckpointInterval int           `json:"checkpoint_interval"`
-	MaxBufferSize      int           `json:"max_buffer_size"`
-	MaxLineSize        int           `json:"max_line_size"`
-	ReadTimeout        time.Duration `json:"read_timeout"`
+	Path               string
+	StateDir           string
+	CheckpointInterval int
+	MaxBufferSize      int
+	MaxLineSize        int
+	ReadTimeout        time.Duration
 }
 
-// FilePosition tracks the current position in a file
+// FilePosition is serialized to disk for crash recovery.
 type FilePosition struct {
 	FilePath   string       `json:"file_path"`
 	Inode      uint64       `json:"inode"`
@@ -119,7 +101,6 @@ type StreamingFileInput struct {
 	lastMetricsFlush time.Time
 }
 
-// NewStreamingFileInput creates a new streaming file input
 func NewStreamingFileInput(cfg StreamingFileInputConfig, logger *service.Logger) (*StreamingFileInput, error) {
 	if cfg.Path == "" {
 		return nil, errors.New("path is required")
@@ -265,56 +246,48 @@ This component uses fsnotify for file change detection:
 			Example(1048576))
 }
 
-// logDebugf logs a debug message using Bento logger
 func (sfi *StreamingFileInput) logDebugf(format string, args ...interface{}) {
 	if sfi.logger != nil {
 		sfi.logger.Debugf(format, args...)
 	}
 }
 
-// logInfof logs an info message using Bento logger
 func (sfi *StreamingFileInput) logInfof(format string, args ...interface{}) {
 	if sfi.logger != nil {
 		sfi.logger.Infof(format, args...)
 	}
 }
 
-// logWarnf logs a warning message using Bento logger
 func (sfi *StreamingFileInput) logWarnf(format string, args ...interface{}) {
 	if sfi.logger != nil {
 		sfi.logger.Warnf(format, args...)
 	}
 }
 
-// logErrorf logs an error message using Bento logger
 func (sfi *StreamingFileInput) logErrorf(format string, args ...interface{}) {
 	if sfi.logger != nil {
 		sfi.logger.Errorf(format, args...)
 	}
 }
 
-// setLastSaveNow safely sets the last save time to now
 func (sfi *StreamingFileInput) setLastSaveNow() {
 	sfi.statusMu.Lock()
 	sfi.lastSaveTime = time.Now()
 	sfi.statusMu.Unlock()
 }
 
-// getLastSaveTime safely gets the last save time
 func (sfi *StreamingFileInput) getLastSaveTime() time.Time {
 	sfi.statusMu.RLock()
 	defer sfi.statusMu.RUnlock()
 	return sfi.lastSaveTime
 }
 
-// statePaths returns the state file path for this input
 func (sfi *StreamingFileInput) statePaths() string {
 	abs, _ := filepath.Abs(sfi.config.Path)
 	sum := sha1.Sum([]byte(abs))
 	return filepath.Join(sfi.config.StateDir, fmt.Sprintf("pos_%x.json", sum[:8]))
 }
 
-// Connect opens the file and starts reading
 func (sfi *StreamingFileInput) Connect(ctx context.Context) error {
 	sfi.connMutex.Lock()
 	defer sfi.connMutex.Unlock()
@@ -938,7 +911,6 @@ func (sfi *StreamingFileInput) loadPosition() error {
 	return nil
 }
 
-// Read returns the next message from the buffer
 func (sfi *StreamingFileInput) Read(ctx context.Context) (*service.Message, service.AckFunc, error) {
 	sfi.connMutex.RLock()
 	connected := sfi.connected
@@ -1078,7 +1050,6 @@ func (sfi *StreamingFileInput) Read(ctx context.Context) (*service.Message, serv
 	}
 }
 
-// Close closes the file and stops reading
 func (sfi *StreamingFileInput) Close(ctx context.Context) error {
 	sfi.connMutex.Lock()
 	if !sfi.connected {
