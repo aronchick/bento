@@ -61,7 +61,6 @@ type StreamingFileInputConfig struct {
 	MaxBufferSize      int           `json:"max_buffer_size"`
 	MaxLineSize        int           `json:"max_line_size"`
 	ReadTimeout        time.Duration `json:"read_timeout"`
-	Debug              bool          `json:"debug"`
 }
 
 // FilePosition tracks the current position in a file
@@ -263,10 +262,7 @@ This component uses fsnotify for file change detection:
 		Field(service.NewIntField("max_line_size").
 			Description("Maximum line size in bytes to prevent OOM").
 			Default(1048576).
-			Example(1048576)).
-		Field(service.NewBoolField("debug").
-			Description("Enable debug logging").
-			Default(false))
+			Example(1048576))
 }
 
 // logDebugf logs a debug message using Bento logger
@@ -937,9 +933,7 @@ func (sfi *StreamingFileInput) loadPosition() error {
 	sfi.position.LineNumber.Store(loadedPos.RawLineNum)
 	sfi.position.Timestamp = loadedPos.Timestamp
 
-	if sfi.config.Debug {
-		sfi.logDebugf("Loaded position: line=%d, offset=%d", loadedPos.RawLineNum, loadedPos.RawOffset)
-	}
+	sfi.logDebugf("Loaded position: line=%d, offset=%d", loadedPos.RawLineNum, loadedPos.RawOffset)
 
 	return nil
 }
@@ -1275,10 +1269,6 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			debug, err := pConf.FieldBool("debug")
-			if err != nil {
-				return nil, err
-			}
 
 			cfg := StreamingFileInputConfig{
 				Path:               path,
@@ -1286,7 +1276,6 @@ func init() {
 				CheckpointInterval: checkpointInterval,
 				MaxBufferSize:      maxBufferSize,
 				MaxLineSize:        maxLineSize,
-				Debug:              debug,
 			}
 
 			return NewStreamingFileInput(cfg, res.Logger())
