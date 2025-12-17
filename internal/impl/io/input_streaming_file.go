@@ -234,19 +234,34 @@ func NewStreamingFileInput(cfg StreamingFileInputConfig, logger *service.Logger)
 
 func streamingFileInputSpec() *service.ConfigSpec {
 	return service.NewConfigSpec().
-		Stable().
 		Categories("Local").
-		Summary("Robust streaming file input with automatic recovery and rotation handling").
+		Summary("Streaming file input with log rotation and truncation handling").
 		Description(`
-Reads from a file continuously, similar to using a subprocess with 'tail -F', but with several important improvements:
+Reads from a file continuously, similar to 'tail -F', with handling for common log file scenarios.
 
-- Automatic recovery from crashes using persistent position tracking
-- Seamless handling of file rotations
-- At-least-once semantics with ack-based position updates
-- Comprehensive metrics and observability
-- No external process dependencies
+## Core Features
 
-The input maintains state in a JSON file to enable recovery from the exact position where it left off.
+- **Log Rotation**: Detects when a file is rotated (renamed/recreated) via inode changes and seamlessly switches to the new file
+- **Truncation**: Detects when a file is truncated and resets to read from the beginning
+- **Position Recovery**: Optionally persists read position to disk for crash recovery
+
+## Position Tracking Trade-off
+
+This component can persist position state to disk via the state_dir option. This differs from Bento's default "no disk persisted state" philosophy but enables resuming from the last position after restarts. If crash recovery is not needed, you may omit state_dir or use a tmpfs mount.
+
+## Platform Limitations
+
+This component uses fsnotify for file change detection:
+
+- **NFS/Network Filesystems**: fsnotify does not work reliably on NFS or other network filesystems
+- **Supported Platforms**: Linux (inotify), macOS (FSEvents), Windows (ReadDirectoryChangesW), BSD variants (kqueue)
+- **Container Environments**: Ensure the file path is mounted from the host, not a container-internal path
+
+## Delivery Semantics
+
+- Normal operation: effectively exactly-once (position persisted on message acknowledgment)
+- After crash/restart: at-least-once (may replay messages since last checkpoint)
+- During rotation: position resets to beginning of new file
 `).
 		Field(service.NewStringField("path").
 			Description("Path to the file to read from").
