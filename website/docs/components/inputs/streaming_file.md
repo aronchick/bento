@@ -26,44 +26,42 @@ input:
   label: ""
   streaming_file:
     path: /var/log/app.log # No default (required)
-    state_dir: /tmp/bento-streaming-file-state
-    checkpoint_interval: 100
     max_buffer_size: 1000
     max_line_size: 1048576
 ```
 
 Reads from a file continuously with automatic handling of log rotation and truncation.
 
-### Core Features
+## Core Features
 
-- **Log rotation handling**: Detects when a file is rotated (via inode change) and seamlessly
-  switches to the new file
-- **Truncation handling**: Detects when a file is truncated and resets position to the beginning
-- **Position tracking**: Optionally persists read position to disk for crash recovery
+- **Log Rotation**: Detects when a file is rotated (renamed/recreated) via inode changes and seamlessly switches to the new file
+- **Truncation**: Detects when a file is truncated and resets to read from the beginning
+- **Position Metadata**: Each message includes file position metadata (path, inode, byte_offset) that can be used with Bento's cache system to implement custom persistence
 
-### Position Tracking Trade-off
+## Position Tracking
 
-This component can persist position state to disk via `state_dir`, which differs from
-Bento's general "no disk persisted state" philosophy. This trade-off enables crash recovery
-for use cases where reprocessing from the beginning is unacceptable. If crash recovery is not
-needed, you can use a tmpfs mount for state_dir or accept that a restart will reprocess from
-the file's beginning.
+This component exposes file position as metadata on each message. To implement crash recovery, you can:
 
-### Platform Limitations
+1. Store the position in a cache on each message
+2. On startup, read the cached position and use a processor to filter already-processed lines
 
-This component uses fsnotify for file change detection, which has the following constraints:
+This approach keeps the input stateless while enabling persistence through pipeline composition.
 
-- **NFS/network filesystems**: fsnotify does not work reliably on network-mounted filesystems
-- **Supported platforms**: Linux, macOS, Windows, BSD (any platform supporting inotify, kqueue, or ReadDirectoryChangesW)
-- **Container environments**: When running in containers, ensure the watched file path is
-  properly mounted and accessible
+## Metadata Fields
 
-### Delivery Semantics
+Each message includes the following metadata:
 
-- **Normal operation**: Exactly-once (position persisted after each ack)
-- **After crash/restart**: At-least-once (may reprocess messages since last checkpoint)
-- **After rotation**: Exactly-once (new file position persisted immediately)
+- `streaming_file_path` - The file path being read
+- `streaming_file_inode` - The file's inode (for rotation detection)
+- `streaming_file_offset` - Byte offset where this line started
 
+## Platform Limitations
+
+This component uses fsnotify for file change detection:
+
+- **NFS/Network Filesystems**: fsnotify does not work reliably on NFS or other network filesystems
+- **Supported Platforms**: Linux (inotify), macOS (FSEvents), Windows (ReadDirectoryChangesW), BSD variants (kqueue)
+- **Container Environments**: Ensure the file path is mounted from the host, not a container-internal path
 
 ## Fields
 
@@ -78,34 +76,6 @@ Type: `string`
 # Examples
 
 path: /var/log/app.log
-```
-
-### `state_dir`
-
-Directory to store position tracking state
-
-
-Type: `string`  
-Default: `"/tmp/bento-streaming-file-state"`  
-
-```yml
-# Examples
-
-state_dir: /tmp/bento-streaming-file-state
-```
-
-### `checkpoint_interval`
-
-How often to persist position (in lines)
-
-
-Type: `int`  
-Default: `100`  
-
-```yml
-# Examples
-
-checkpoint_interval: 100
 ```
 
 ### `max_buffer_size`

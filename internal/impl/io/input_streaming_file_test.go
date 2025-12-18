@@ -3,7 +3,6 @@ package io_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,7 +24,6 @@ func stripNewline(b []byte) string {
 
 func TestStreamingFileInput_BasicReading(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
 	filePath := filepath.Join(tmpDir, "test.log")
 
 	// Create test file
@@ -33,11 +31,9 @@ func TestStreamingFileInput_BasicReading(t *testing.T) {
 	require.NoError(t, os.WriteFile(filePath, []byte(testData), 0644))
 
 	cfg := io.StreamingFileInputConfig{
-		Path:               filePath,
-		StateDir:           stateDir,
-		CheckpointInterval: 1,
-		MaxBufferSize:      10,
-		MaxLineSize:        1024 * 1024,
+		Path:          filePath,
+		MaxBufferSize: 10,
+		MaxLineSize:   1024 * 1024,
 	}
 
 	input, err := io.NewStreamingFileInput(cfg, nil)
@@ -53,81 +49,90 @@ func TestStreamingFileInput_BasicReading(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Read lines
-	msg1, _, err := input.Read(ctx)
+	msg1, ack1, err := input.Read(ctx)
 	require.NoError(t, err)
 	b1, err := msg1.AsBytes()
 	require.NoError(t, err)
 	assert.Equal(t, "line1", stripNewline(b1))
+	require.NoError(t, ack1(ctx, nil))
 
-	msg2, _, err := input.Read(ctx)
+	msg2, ack2, err := input.Read(ctx)
 	require.NoError(t, err)
 	b2, err := msg2.AsBytes()
 	require.NoError(t, err)
 	assert.Equal(t, "line2", stripNewline(b2))
+	require.NoError(t, ack2(ctx, nil))
 
-	msg3, _, err := input.Read(ctx)
+	msg3, ack3, err := input.Read(ctx)
 	require.NoError(t, err)
 	b3, err := msg3.AsBytes()
 	require.NoError(t, err)
 	assert.Equal(t, "line3", stripNewline(b3))
+	require.NoError(t, ack3(ctx, nil))
 }
 
-func TestStreamingFileInput_PositionPersistence(t *testing.T) {
+func TestStreamingFileInput_PositionMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
 	filePath := filepath.Join(tmpDir, "test.log")
 
 	// Create test file with multiple lines
-	testData := "line1\nline2\nline3\nline4\nline5\n"
+	testData := "line1\nline2\nline3\n"
 	require.NoError(t, os.WriteFile(filePath, []byte(testData), 0644))
 
 	cfg := io.StreamingFileInputConfig{
-		Path:               filePath,
-		StateDir:           stateDir,
-		CheckpointInterval: 2, // Save position every 2 lines
-		MaxBufferSize:      10,
-		MaxLineSize:        1024 * 1024,
+		Path:          filePath,
+		MaxBufferSize: 10,
+		MaxLineSize:   1024 * 1024,
 	}
 
-	// First reader - read first 2 lines
-	input1, err := io.NewStreamingFileInput(cfg, nil)
+	input, err := io.NewStreamingFileInput(cfg, nil)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	require.NoError(t, input1.Connect(ctx))
+	require.NoError(t, input.Connect(ctx))
+	defer input.Close(ctx)
+
 	time.Sleep(100 * time.Millisecond)
 
-	// Read and ack first 2 lines
-	_, ack1, err := input1.Read(ctx)
+	// Read first line and check metadata
+	msg1, ack1, err := input.Read(ctx)
 	require.NoError(t, err)
+
+	// Check metadata fields exist
+	path, ok := msg1.MetaGet("streaming_file_path")
+	assert.True(t, ok, "streaming_file_path metadata should exist")
+	assert.Equal(t, filePath, path)
+
+	inode, ok := msg1.MetaGet("streaming_file_inode")
+	assert.True(t, ok, "streaming_file_inode metadata should exist")
+	assert.NotEmpty(t, inode)
+
+	offset, ok := msg1.MetaGet("streaming_file_offset")
+	assert.True(t, ok, "streaming_file_offset metadata should exist")
+	assert.Equal(t, "0", offset, "first line should start at offset 0")
+
 	require.NoError(t, ack1(ctx, nil))
 
-	_, ack2, err := input1.Read(ctx)
+	// Read second line - offset should have advanced
+	msg2, ack2, err := input.Read(ctx)
 	require.NoError(t, err)
+
+	offset2, ok := msg2.MetaGet("streaming_file_offset")
+	assert.True(t, ok)
+	assert.Equal(t, "6", offset2, "second line should start at offset 6 (after 'line1\\n')")
+
 	require.NoError(t, ack2(ctx, nil))
 
-	// Give time for checkpoint
-	time.Sleep(200 * time.Millisecond)
-
-	require.NoError(t, input1.Close(ctx))
-
-	// Second reader - should resume from position
-	input2, err := io.NewStreamingFileInput(cfg, nil)
+	// Read third line
+	msg3, ack3, err := input.Read(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, input2.Connect(ctx))
-	defer input2.Close(ctx)
-
-	time.Sleep(100 * time.Millisecond)
-
-	// Should read line3 (next line after checkpoint)
-	msg3, _, err := input2.Read(ctx)
-	require.NoError(t, err)
-	b3, err := msg3.AsBytes()
-	require.NoError(t, err)
-	assert.Equal(t, "line3", stripNewline(b3))
+	offset3, ok := msg3.MetaGet("streaming_file_offset")
+	assert.True(t, ok)
+	assert.Equal(t, "12", offset3, "third line should start at offset 12")
+	require.NoError(t, ack3(ctx, nil))
 }
 
 func TestStreamingFileInput_FileRotation(t *testing.T) {
@@ -136,7 +141,6 @@ func TestStreamingFileInput_FileRotation(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
 	filePath := filepath.Join(tmpDir, "test.log")
 
 	// Create initial file
@@ -144,11 +148,9 @@ func TestStreamingFileInput_FileRotation(t *testing.T) {
 	require.NoError(t, os.WriteFile(filePath, []byte(testData), 0644))
 
 	cfg := io.StreamingFileInputConfig{
-		Path:               filePath,
-		StateDir:           stateDir,
-		CheckpointInterval: 1,
-		MaxBufferSize:      10,
-		MaxLineSize:        1024 * 1024,
+		Path:          filePath,
+		MaxBufferSize: 10,
+		MaxLineSize:   1024 * 1024,
 	}
 
 	input, err := io.NewStreamingFileInput(cfg, nil)
@@ -191,16 +193,21 @@ func TestStreamingFileInput_FileRotation(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Should read from new file
-	msg3, _, err := input.Read(ctx)
+	msg3, ack3, err := input.Read(ctx)
 	require.NoError(t, err)
 	b3, err := msg3.AsBytes()
 	require.NoError(t, err)
 	assert.Equal(t, "line3", stripNewline(b3))
+
+	// Verify metadata shows offset reset to 0 for new file
+	offset, ok := msg3.MetaGet("streaming_file_offset")
+	assert.True(t, ok)
+	assert.Equal(t, "0", offset, "offset should reset to 0 after rotation")
+	require.NoError(t, ack3(ctx, nil))
 }
 
 func TestStreamingFileInput_ConcurrentReads(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
 	filePath := filepath.Join(tmpDir, "test.log")
 
 	// Create test file with many lines
@@ -211,16 +218,15 @@ func TestStreamingFileInput_ConcurrentReads(t *testing.T) {
 	require.NoError(t, os.WriteFile(filePath, []byte(testData), 0644))
 
 	cfg := io.StreamingFileInputConfig{
-		Path:               filePath,
-		StateDir:           stateDir,
-		CheckpointInterval: 10,
-		MaxBufferSize:      50,
-		MaxLineSize:        1024 * 1024,
+		Path:          filePath,
+		MaxBufferSize: 50,
+		MaxLineSize:   1024 * 1024,
 	}
 
 	input, err := io.NewStreamingFileInput(cfg, nil)
 	require.NoError(t, err)
 
+	// Use a longer timeout for setup, but we'll cancel once all lines are read
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -233,6 +239,7 @@ func TestStreamingFileInput_ConcurrentReads(t *testing.T) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	readLines := make(map[string]bool)
+	var readCount int
 
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
@@ -247,8 +254,13 @@ func TestStreamingFileInput_ConcurrentReads(t *testing.T) {
 				line := stripNewline(b)
 				mu.Lock()
 				readLines[line] = true
+				readCount++
+				done := readCount >= 100
 				mu.Unlock()
 				_ = ack(ctx, nil)
+				if done {
+					cancel() // Signal all readers to stop
+				}
 			}
 		}()
 	}
@@ -262,62 +274,12 @@ func TestStreamingFileInput_ConcurrentReads(t *testing.T) {
 	}
 }
 
-func TestStreamingFileInput_StateFileFormat(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
-	filePath := filepath.Join(tmpDir, "test.log")
-
-	testData := "line1\nline2\n"
-	require.NoError(t, os.WriteFile(filePath, []byte(testData), 0644))
-
-	cfg := io.StreamingFileInputConfig{
-		Path:               filePath,
-		StateDir:           stateDir,
-		CheckpointInterval: 1,
-		MaxBufferSize:      10,
-		MaxLineSize:        1024 * 1024,
-	}
-
-	input, err := io.NewStreamingFileInput(cfg, nil)
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	require.NoError(t, input.Connect(ctx))
-	defer input.Close(ctx)
-
-	time.Sleep(100 * time.Millisecond)
-
-	// Read and ack a line
-	_, ack, err := input.Read(ctx)
-	require.NoError(t, err)
-	require.NoError(t, ack(ctx, nil))
-
-	time.Sleep(200 * time.Millisecond)
-	require.NoError(t, input.Close(ctx))
-
-	// Check state file exists and is valid JSON
-	stateFiles, err := filepath.Glob(filepath.Join(stateDir, "pos_*.json"))
-	require.NoError(t, err)
-	require.Len(t, stateFiles, 1)
-
-	data, err := os.ReadFile(stateFiles[0])
-	require.NoError(t, err)
-
-	var pos io.FilePosition
-	require.NoError(t, json.Unmarshal(data, &pos))
-	assert.Equal(t, filePath, pos.FilePath)
-	assert.Greater(t, pos.RawOffset, int64(0))
-}
-
 func TestStreamingFileInput_FileTruncation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("File truncation test requires Unix-like system")
 	}
 
 	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
 	filePath := filepath.Join(tmpDir, "test.log")
 
 	// Create initial file with multiple lines
@@ -325,11 +287,9 @@ func TestStreamingFileInput_FileTruncation(t *testing.T) {
 	require.NoError(t, os.WriteFile(filePath, []byte(testData), 0644))
 
 	cfg := io.StreamingFileInputConfig{
-		Path:               filePath,
-		StateDir:           stateDir,
-		CheckpointInterval: 1,
-		MaxBufferSize:      10,
-		MaxLineSize:        1024 * 1024,
+		Path:          filePath,
+		MaxBufferSize: 10,
+		MaxLineSize:   1024 * 1024,
 	}
 
 	input, err := io.NewStreamingFileInput(cfg, nil)
@@ -360,8 +320,87 @@ func TestStreamingFileInput_FileTruncation(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Should read from the beginning of the truncated file
-	msg, _, err := input.Read(ctx)
+	msg, ack, err := input.Read(ctx)
 	require.NoError(t, err)
 	b, _ := msg.AsBytes()
 	assert.Equal(t, "x", stripNewline(b))
+
+	// Verify metadata shows offset reset to 0 after truncation
+	offset, ok := msg.MetaGet("streaming_file_offset")
+	assert.True(t, ok)
+	assert.Equal(t, "0", offset, "offset should reset to 0 after truncation")
+	require.NoError(t, ack(ctx, nil))
+}
+
+func TestStreamingFileInput_LiveAppend(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "test.log")
+
+	// Create initial empty file
+	require.NoError(t, os.WriteFile(filePath, []byte{}, 0644))
+
+	cfg := io.StreamingFileInputConfig{
+		Path:          filePath,
+		MaxBufferSize: 10,
+		MaxLineSize:   1024 * 1024,
+	}
+
+	input, err := io.NewStreamingFileInput(cfg, nil)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	require.NoError(t, input.Connect(ctx))
+	defer input.Close(ctx)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Append lines to the file
+	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0644)
+	require.NoError(t, err)
+
+	_, err = f.WriteString("appended1\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Sync())
+
+	// Give fsnotify time to detect the change
+	time.Sleep(200 * time.Millisecond)
+
+	// Read the appended line
+	msg1, ack1, err := input.Read(ctx)
+	require.NoError(t, err)
+	b1, err := msg1.AsBytes()
+	require.NoError(t, err)
+	assert.Equal(t, "appended1", stripNewline(b1))
+	require.NoError(t, ack1(ctx, nil))
+
+	// Append another line
+	_, err = f.WriteString("appended2\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Sync())
+	require.NoError(t, f.Close())
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Read the second appended line
+	msg2, ack2, err := input.Read(ctx)
+	require.NoError(t, err)
+	b2, err := msg2.AsBytes()
+	require.NoError(t, err)
+	assert.Equal(t, "appended2", stripNewline(b2))
+	require.NoError(t, ack2(ctx, nil))
+}
+
+func TestStreamingFileInput_FilePositionStruct(t *testing.T) {
+	// Test that FilePosition struct is correctly defined for metadata use
+	pos := io.FilePosition{
+		FilePath:   "/var/log/test.log",
+		Inode:      12345,
+		ByteOffset: 1024,
+	}
+
+	assert.Equal(t, "/var/log/test.log", pos.FilePath)
+	assert.Equal(t, uint64(12345), pos.Inode)
+	assert.Equal(t, int64(1024), pos.ByteOffset)
 }
