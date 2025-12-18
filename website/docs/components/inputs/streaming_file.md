@@ -32,31 +32,37 @@ input:
     max_line_size: 1048576
 ```
 
-Reads from a file continuously, similar to 'tail -F', with handling for common log file scenarios.
+Reads from a file continuously with automatic handling of log rotation and truncation.
 
-## Core Features
+### Core Features
 
-- **Log Rotation**: Detects when a file is rotated (renamed/recreated) via inode changes and seamlessly switches to the new file
-- **Truncation**: Detects when a file is truncated and resets to read from the beginning
-- **Position Recovery**: Optionally persists read position to disk for crash recovery
+- **Log rotation handling**: Detects when a file is rotated (via inode change) and seamlessly
+  switches to the new file
+- **Truncation handling**: Detects when a file is truncated and resets position to the beginning
+- **Position tracking**: Optionally persists read position to disk for crash recovery
 
-## Position Tracking Trade-off
+### Position Tracking Trade-off
 
-This component can persist position state to disk via the state_dir option. This differs from Bento's default "no disk persisted state" philosophy but enables resuming from the last position after restarts. If crash recovery is not needed, you may omit state_dir or use a tmpfs mount.
+This component can persist position state to disk via `state_dir`, which differs from
+Bento's general "no disk persisted state" philosophy. This trade-off enables crash recovery
+for use cases where reprocessing from the beginning is unacceptable. If crash recovery is not
+needed, you can use a tmpfs mount for state_dir or accept that a restart will reprocess from
+the file's beginning.
 
-## Platform Limitations
+### Platform Limitations
 
-This component uses fsnotify for file change detection:
+This component uses fsnotify for file change detection, which has the following constraints:
 
-- **NFS/Network Filesystems**: fsnotify does not work reliably on NFS or other network filesystems
-- **Supported Platforms**: Linux (inotify), macOS (FSEvents), Windows (ReadDirectoryChangesW), BSD variants (kqueue)
-- **Container Environments**: Ensure the file path is mounted from the host, not a container-internal path
+- **NFS/network filesystems**: fsnotify does not work reliably on network-mounted filesystems
+- **Supported platforms**: Linux, macOS, Windows, BSD (any platform supporting inotify, kqueue, or ReadDirectoryChangesW)
+- **Container environments**: When running in containers, ensure the watched file path is
+  properly mounted and accessible
 
-## Delivery Semantics
+### Delivery Semantics
 
-- Normal operation: effectively exactly-once (position persisted on message acknowledgment)
-- After crash/restart: at-least-once (may replay messages since last checkpoint)
-- During rotation: position resets to beginning of new file
+- **Normal operation**: Exactly-once (position persisted after each ack)
+- **After crash/restart**: At-least-once (may reprocess messages since last checkpoint)
+- **After rotation**: Exactly-once (new file position persisted immediately)
 
 
 ## Fields
