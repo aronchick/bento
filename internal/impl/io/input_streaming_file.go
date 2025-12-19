@@ -31,10 +31,11 @@ var splitKeepNewline = func(data []byte, atEOF bool) (int, []byte, error) {
 
 // StreamingFileInputConfig holds configuration for the streaming file input.
 type StreamingFileInputConfig struct {
-	Path          string
-	MaxBufferSize int
-	MaxLineSize   int
-	ReadTimeout   time.Duration
+	Path            string
+	MaxBufferSize   int
+	MaxLineSize     int
+	PollInterval    time.Duration
+	DisableFSNotify bool // When true, use polling only (more CPU-efficient at high write rates)
 }
 
 // FilePosition represents the current read position in a file.
@@ -77,8 +78,8 @@ func NewStreamingFileInput(cfg StreamingFileInputConfig, logger *service.Logger)
 	if cfg.MaxLineSize <= 0 {
 		cfg.MaxLineSize = 1024 * 1024 // 1MB default
 	}
-	if cfg.ReadTimeout <= 0 {
-		cfg.ReadTimeout = 30 * time.Second
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = 1 * time.Second // Default 1s polling, like tail -F
 	}
 
 	return &StreamingFileInput{
@@ -123,9 +124,19 @@ Each message includes the following metadata:
 - ` + "`streaming_file_inode`" + ` - The file's inode (for rotation detection)
 - ` + "`streaming_file_offset`" + ` - Byte offset where this line started
 
+## Performance Considerations
+
+By default, this component uses polling-only mode for better CPU efficiency at high write rates.
+This is based on findings from large-scale deployments where inotify/fsnotify can cause significant
+CPU overhead when files are written to frequently (each write triggers an event, leading to excessive
+fstat calls). See ` + "`disable_fsnotify`" + ` option below.
+
+For low-volume log files where you want sub-second latency, you can enable fsnotify by setting
+` + "`disable_fsnotify: false`" + `.
+
 ### Platform Limitations
 
-This component uses fsnotify for file change detection:
+When fsnotify is enabled:
 
 - **NFS/Network Filesystems**: fsnotify does not work reliably on NFS or other network filesystems
 - **Supported Platforms**: Linux (inotify), macOS (FSEvents), Windows (ReadDirectoryChangesW), BSD variants (kqueue)
@@ -141,7 +152,17 @@ This component uses fsnotify for file change detection:
 		Field(service.NewIntField("max_line_size").
 			Description("Maximum line size in bytes to prevent OOM").
 			Default(1048576).
-			Example(1048576))
+			Example(1048576)).
+		Field(service.NewDurationField("poll_interval").
+			Description("How often to poll the file for new data. This is the primary mechanism for detecting new data. Lower values mean lower latency but higher CPU usage.").
+			Default("1s").
+			Example("1s").
+			Example("200ms")).
+		Field(service.NewBoolField("disable_fsnotify").
+			Description("When true (default), only use polling to detect file changes. This is more CPU-efficient for high-throughput log files where inotify would fire constantly. Set to false to enable fsnotify for lower latency on low-volume files.").
+			Default(true).
+			Example(true).
+			Example(false))
 }
 
 // Connect opens the file and starts monitoring for changes.
@@ -184,22 +205,26 @@ func (sfi *StreamingFileInput) Connect(ctx context.Context) error {
 	sfi.reader = bufio.NewReader(file)
 	sfi.fileMu.Unlock()
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return fmt.Errorf("failed to create fsnotify watcher: %w", err)
+	// Only create fsnotify watcher if not disabled.
+	// Polling-only mode (DisableFSNotify=true) is more CPU-efficient for high-volume logs.
+	if !sfi.config.DisableFSNotify {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			sfi.logger.Warnf("Failed to create fsnotify watcher, falling back to polling: %v", err)
+		} else {
+			if err := watcher.Add(sfi.config.Path); err != nil {
+				watcher.Close()
+				sfi.logger.Warnf("Failed to watch file, falling back to polling: %v", err)
+			} else {
+				parentDir := filepath.Dir(sfi.config.Path)
+				if err := watcher.Add(parentDir); err != nil {
+					sfi.logger.Warnf("Failed to watch parent directory '%s', rotation detection may be degraded: %v", parentDir, err)
+				}
+				sfi.watcher = watcher
+			}
+		}
 	}
 
-	if err := watcher.Add(sfi.config.Path); err != nil {
-		watcher.Close()
-		return fmt.Errorf("failed to watch file: %w", err)
-	}
-
-	parentDir := filepath.Dir(sfi.config.Path)
-	if err := watcher.Add(parentDir); err != nil {
-		sfi.logger.Warnf("Failed to watch parent directory '%s', rotation detection may be degraded: %v", parentDir, err)
-	}
-
-	sfi.watcher = watcher
 	sfi.connected = true
 
 	sfi.wg.Add(1)
@@ -209,18 +234,42 @@ func (sfi *StreamingFileInput) Connect(ctx context.Context) error {
 }
 
 // monitorFile is the primary goroutine for watching and reading the file.
+// Supports two modes:
+// - Polling-only (default, DisableFSNotify=true): More CPU-efficient for high-volume logs
+// - Event-driven with polling fallback (DisableFSNotify=false): Lower latency for low-volume logs
 func (sfi *StreamingFileInput) monitorFile(ctx context.Context) {
 	defer sfi.wg.Done()
 	defer close(sfi.readLoopDone)
-	defer sfi.watcher.Close()
+	if sfi.watcher != nil {
+		defer sfi.watcher.Close()
+	}
 
 	// Do an initial drain of any existing file content
 	sfi.drainAvailableData()
 
-	// Health check ticker as a fallback for missed events
-	healthCheck := time.NewTicker(30 * time.Second)
-	defer healthCheck.Stop()
+	// Polling ticker - the primary mechanism in polling-only mode,
+	// or a fallback for missed fsnotify events in event-driven mode.
+	pollInterval := time.NewTicker(sfi.config.PollInterval)
+	defer pollInterval.Stop()
 
+	// If no watcher, run in pure polling mode (more CPU-efficient)
+	if sfi.watcher == nil {
+		sfi.logger.Debugf("Running in polling-only mode (interval: %v)", sfi.config.PollInterval)
+		for {
+			select {
+			case <-pollInterval.C:
+				sfi.checkStateAndReact()
+				sfi.drainAvailableData()
+			case <-sfi.stopCh:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+
+	// Event-driven mode with polling fallback
+	sfi.logger.Debugf("Running in fsnotify mode with polling fallback (interval: %v)", sfi.config.PollInterval)
 	for {
 		select {
 		case event, ok := <-sfi.watcher.Events:
@@ -243,8 +292,11 @@ func (sfi *StreamingFileInput) monitorFile(ctx context.Context) {
 				sfi.checkStateAndReact()
 			}
 
-		case <-healthCheck.C:
+		case <-pollInterval.C:
+			// Fallback polling: check for rotation/truncation AND try to read
+			// any new data. This handles cases where fsnotify misses events.
 			sfi.checkStateAndReact()
+			sfi.drainAvailableData()
 
 		case err, ok := <-sfi.watcher.Errors:
 			if !ok {
@@ -507,6 +559,8 @@ func (sfi *StreamingFileInput) drainBufferChannel() {
 }
 
 // Read returns the next message from the file.
+// Like tail -F, this blocks indefinitely until data is available,
+// the input is closed, or the context is cancelled.
 func (sfi *StreamingFileInput) Read(ctx context.Context) (*service.Message, service.AckFunc, error) {
 	sfi.connMutex.RLock()
 	connected := sfi.connected
@@ -516,19 +570,13 @@ func (sfi *StreamingFileInput) Read(ctx context.Context) (*service.Message, serv
 		return nil, nil, service.ErrNotConnected
 	}
 
-	sfi.checkStateAndReact()
-
-	readCtx := ctx
-	var cancel context.CancelFunc
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		readCtx, cancel = context.WithTimeout(ctx, sfi.config.ReadTimeout)
-		defer cancel()
-	}
-
+	// Block until data is available, shutdown, or context cancellation.
+	// This matches tail -F behavior: no artificial timeout, just wait for data.
 	select {
-	case <-readCtx.Done():
-		return nil, nil, readCtx.Err()
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
 	case <-sfi.stopCh:
+		// On shutdown, drain any remaining buffered data
 		select {
 		case lineBytes, ok := <-sfi.buffer:
 			if !ok {
@@ -664,11 +712,21 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
+			pollInterval, err := pConf.FieldDuration("poll_interval")
+			if err != nil {
+				return nil, err
+			}
+			disableFSNotify, err := pConf.FieldBool("disable_fsnotify")
+			if err != nil {
+				return nil, err
+			}
 
 			cfg := StreamingFileInputConfig{
-				Path:          path,
-				MaxBufferSize: maxBufferSize,
-				MaxLineSize:   maxLineSize,
+				Path:            path,
+				MaxBufferSize:   maxBufferSize,
+				MaxLineSize:     maxLineSize,
+				PollInterval:    pollInterval,
+				DisableFSNotify: disableFSNotify,
 			}
 
 			return NewStreamingFileInput(cfg, res.Logger())
