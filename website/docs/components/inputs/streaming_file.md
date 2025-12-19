@@ -55,13 +55,14 @@ Each message includes the following metadata:
 - `streaming_file_inode` - The file's inode (for rotation detection)
 - `streaming_file_offset` - Byte offset where this line started
 
-## Platform Limitations
+### Platform Limitations
 
 This component uses fsnotify for file change detection:
 
 - **NFS/Network Filesystems**: fsnotify does not work reliably on NFS or other network filesystems
 - **Supported Platforms**: Linux (inotify), macOS (FSEvents), Windows (ReadDirectoryChangesW), BSD variants (kqueue)
 - **Container Environments**: Ensure the file path is mounted from the host, not a container-internal path
+
 
 ## Fields
 
