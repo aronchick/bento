@@ -1,0 +1,13 @@
+# Stream pod logs to stdout
+# This is the simplest way to tail logs from pods matching a label selector.
+
+input:
+  kubernetes_logs:
+    label_selector: "app=myapp"
+    namespaces:
+      - default
+    follow: true
+    tail_lines: 100
+
+output:
+  stdout: {}

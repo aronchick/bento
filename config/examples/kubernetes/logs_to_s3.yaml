@@ -1,0 +1,28 @@
+# Archive pod logs to S3
+# Streams logs from production pods to S3 with daily partitioning.
+
+input:
+  kubernetes_logs:
+    label_selector: "app=backend"
+    namespaces:
+      - production
+    follow: true
+    timestamps: true
+
+pipeline:
+  processors:
+    - mapping: |
+        root.log = content()
+        root.pod = meta("kubernetes_pod_name")
+        root.container = meta("kubernetes_container_name")
+        root.namespace = meta("kubernetes_namespace")
+        root.node = meta("kubernetes_node_name")
+        root.timestamp = now()
+
+output:
+  aws_s3:
+    bucket: my-logs-archive
+    path: 'logs/${! meta("kubernetes_namespace") }/${! now().format_timestamp("2006/01/02") }/${! uuid_v4() }.json'
+    batching:
+      count: 1000
+      period: 10s

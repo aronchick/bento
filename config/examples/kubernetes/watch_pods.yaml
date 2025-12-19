@@ -1,0 +1,29 @@
+# Watch pod state changes
+# Emits events when pods are added, modified, or deleted.
+
+input:
+  kubernetes_watch:
+    resource: pods
+    namespaces:
+      - default
+      - production
+    label_selector: "app=myapp"
+    event_types:
+      - ADDED
+      - MODIFIED
+      - DELETED
+    include_initial_list: true
+
+pipeline:
+  processors:
+    - mapping: |
+        root.event = meta("kubernetes_watch_event_type")
+        root.pod = this.metadata.name
+        root.namespace = this.metadata.namespace
+        root.phase = this.status.phase
+        root.conditions = this.status.conditions
+        root.timestamp = now()
+
+output:
+  stdout:
+    codec: lines

@@ -1,0 +1,25 @@
+# Watch Custom Resource Definition changes
+# Example: Watch for changes to a custom "CronTab" resource.
+
+input:
+  kubernetes_watch:
+    custom_resource:
+      group: stable.example.com
+      version: v1
+      resource: crontabs
+    namespaces:
+      - default
+    include_initial_list: true
+
+pipeline:
+  processors:
+    - mapping: |
+        root.event = meta("kubernetes_watch_event_type")
+        root.name = this.metadata.name
+        root.namespace = this.metadata.namespace
+        root.spec = this.spec
+        root.timestamp = now()
+
+output:
+  stdout:
+    codec: lines

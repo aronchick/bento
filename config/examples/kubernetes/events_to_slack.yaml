@@ -1,0 +1,26 @@
+# Stream Warning events to Slack
+# Sends cluster warning events to a Slack webhook.
+
+input:
+  kubernetes_events:
+    types:
+      - Warning
+    namespaces: []  # All namespaces
+
+pipeline:
+  processors:
+    - mapping: |
+        root.text = "*%s* in `%s/%s`\n%s".format(
+          meta("kubernetes_event_reason"),
+          meta("kubernetes_involved_namespace"),
+          meta("kubernetes_involved_name"),
+          meta("kubernetes_event_message")
+        )
+        root.username = "Kubernetes Alerts"
+
+output:
+  http_client:
+    url: "${SLACK_WEBHOOK_URL}"
+    verb: POST
+    headers:
+      Content-Type: application/json

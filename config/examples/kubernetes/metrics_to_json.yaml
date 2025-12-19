@@ -1,0 +1,23 @@
+# Scrape Prometheus metrics and output as JSON
+# Discovers pods with prometheus.io/scrape=true and emits metrics.
+
+input:
+  kubernetes_metrics:
+    namespaces:
+      - default
+    scrape_pods: true
+    scrape_interval: "15s"
+    default_port: 9090
+    default_path: "/metrics"
+
+pipeline:
+  processors:
+    # Filter to only http_* metrics
+    - mapping: |
+        root = this
+        root.source_pod = meta("kubernetes_pod_name")
+        root.source_namespace = meta("kubernetes_namespace")
+
+output:
+  stdout:
+    codec: lines
