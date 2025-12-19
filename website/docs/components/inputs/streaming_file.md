@@ -28,6 +28,8 @@ input:
     path: /var/log/app.log # No default (required)
     max_buffer_size: 1000
     max_line_size: 1048576
+    poll_interval: 1s
+    disable_fsnotify: true
 ```
 
 Reads from a file continuously with automatic handling of log rotation and truncation.
@@ -55,9 +57,19 @@ Each message includes the following metadata:
 - `streaming_file_inode` - The file's inode (for rotation detection)
 - `streaming_file_offset` - Byte offset where this line started
 
+## Performance Considerations
+
+By default, this component uses polling-only mode for better CPU efficiency at high write rates.
+This is based on findings from large-scale deployments where inotify/fsnotify can cause significant
+CPU overhead when files are written to frequently (each write triggers an event, leading to excessive
+fstat calls). See `disable_fsnotify` option below.
+
+For low-volume log files where you want sub-second latency, you can enable fsnotify by setting
+`disable_fsnotify: false`.
+
 ### Platform Limitations
 
-This component uses fsnotify for file change detection:
+When fsnotify is enabled:
 
 - **NFS/Network Filesystems**: fsnotify does not work reliably on NFS or other network filesystems
 - **Supported Platforms**: Linux (inotify), macOS (FSEvents), Windows (ReadDirectoryChangesW), BSD variants (kqueue)
@@ -105,6 +117,38 @@ Default: `1048576`
 # Examples
 
 max_line_size: 1048576
+```
+
+### `poll_interval`
+
+How often to poll the file for new data. This is the primary mechanism for detecting new data. Lower values mean lower latency but higher CPU usage.
+
+
+Type: `string`  
+Default: `"1s"`  
+
+```yml
+# Examples
+
+poll_interval: 1s
+
+poll_interval: 200ms
+```
+
+### `disable_fsnotify`
+
+When true (default), only use polling to detect file changes. This is more CPU-efficient for high-throughput log files where inotify would fire constantly. Set to false to enable fsnotify for lower latency on low-volume files.
+
+
+Type: `bool`  
+Default: `true`  
+
+```yml
+# Examples
+
+disable_fsnotify: true
+
+disable_fsnotify: false
 ```
 
 
