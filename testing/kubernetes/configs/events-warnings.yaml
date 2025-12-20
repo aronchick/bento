@@ -1,0 +1,15 @@
+# Stream only Warning events - useful for alerting
+# The failing-pod will generate Warning events
+
+input:
+  kubernetes_events:
+    namespaces:
+      - bento-test
+    types:
+      - Warning
+    kubeconfig: ./kubeconfig.yaml
+    include_existing: true
+
+output:
+  stdout:
+    codec: lines

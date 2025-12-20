@@ -1,0 +1,15 @@
+# Stream logs from log-generator pods
+# Demonstrates pod log collection
+
+input:
+  kubernetes_logs:
+    namespaces:
+      - bento-test
+    label_selector: "app=log-generator"
+    kubeconfig: ./kubeconfig.yaml
+    follow: true
+    since: "5m"
+
+output:
+  stdout:
+    codec: lines

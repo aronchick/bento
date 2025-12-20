@@ -1,0 +1,13 @@
+# Watch all pods in bento-test namespace
+# Outputs events to stdout as JSON
+
+input:
+  kubernetes_watch:
+    resource: pods
+    namespaces:
+      - bento-test
+    kubeconfig: ./kubeconfig.yaml
+
+output:
+  stdout:
+    codec: lines

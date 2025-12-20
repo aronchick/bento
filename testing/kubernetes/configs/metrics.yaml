@@ -1,0 +1,15 @@
+# Collect pod metrics from metrics-server
+# Requires metrics-server to be installed (setup-k3d.sh does this)
+
+input:
+  kubernetes_metrics:
+    namespaces:
+      - bento-test
+    kubeconfig: ./kubeconfig.yaml
+    scrape_interval: "15s"
+    resource_types:
+      - pods
+
+output:
+  stdout:
+    codec: lines

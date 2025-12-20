@@ -1,0 +1,14 @@
+# Stream all cluster events
+# Great for debugging and alerting
+
+input:
+  kubernetes_events:
+    namespaces:
+      - bento-test
+    kubeconfig: ./kubeconfig.yaml
+    include_existing: true
+    max_event_age: "5m"
+
+output:
+  stdout:
+    codec: lines
